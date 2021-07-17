@@ -5,7 +5,7 @@
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
    | available through the world-wide-web at the following url:           |
-   | http://www.php.net/license/3_01.txt                                  |
+   | https://www.php.net/license/3_01.txt                                 |
    | If you did not receive a copy of the PHP license and are unable to   |
    | obtain it through the world-wide-web, please send a note to          |
    | license@php.net so we can mail you a copy immediately.               |
@@ -721,7 +721,7 @@ PHP_FUNCTION(count)
 				return;
 			}
 		}
-		/* fallthrough */
+		ZEND_FALLTHROUGH;
 		default:
 			zend_argument_type_error(1, "must be of type Countable|array, %s given", zend_zval_type_name(array));
 			RETURN_THROWS();
@@ -1041,16 +1041,36 @@ PHP_FUNCTION(uksort)
 }
 /* }}} */
 
+static inline HashTable *get_ht_for_iap(zval *zv, bool separate) {
+	if (EXPECTED(Z_TYPE_P(zv) == IS_ARRAY)) {
+		return Z_ARRVAL_P(zv);
+	}
+
+	ZEND_ASSERT(Z_TYPE_P(zv) == IS_OBJECT);
+	php_error_docref(NULL, E_DEPRECATED,
+		"Calling %s() on an object is deprecated", get_active_function_name());
+
+	zend_object *zobj = Z_OBJ_P(zv);
+	if (separate && zobj->properties && UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
+		if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
+			GC_DELREF(zobj->properties);
+		}
+		zobj->properties = zend_array_dup(zobj->properties);
+	}
+	return zobj->handlers->get_properties(zobj);
+}
+
 /* {{{ Advances array argument's internal pointer to the last element and return it */
 PHP_FUNCTION(end)
 {
-	HashTable *array;
+	zval *array_zv;
 	zval *entry;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT_EX(array, 0, 1)
+		Z_PARAM_ARRAY_OR_OBJECT_EX(array_zv, 0, 1)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ true);
 	zend_hash_internal_pointer_end(array);
 
 	if (USED_RET()) {
@@ -1070,13 +1090,14 @@ PHP_FUNCTION(end)
 /* {{{ Move array argument's internal pointer to the previous element and return it */
 PHP_FUNCTION(prev)
 {
-	HashTable *array;
+	zval *array_zv;
 	zval *entry;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT_EX(array, 0, 1)
+		Z_PARAM_ARRAY_OR_OBJECT_EX(array_zv, 0, 1)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ true);
 	zend_hash_move_backwards(array);
 
 	if (USED_RET()) {
@@ -1096,13 +1117,14 @@ PHP_FUNCTION(prev)
 /* {{{ Move array argument's internal pointer to the next element and return it */
 PHP_FUNCTION(next)
 {
-	HashTable *array;
+	zval *array_zv;
 	zval *entry;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT_EX(array, 0, 1)
+		Z_PARAM_ARRAY_OR_OBJECT_EX(array_zv, 0, 1)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ true);
 	zend_hash_move_forward(array);
 
 	if (USED_RET()) {
@@ -1122,13 +1144,14 @@ PHP_FUNCTION(next)
 /* {{{ Set array argument's internal pointer to the first element and return it */
 PHP_FUNCTION(reset)
 {
-	HashTable *array;
+	zval *array_zv;
 	zval *entry;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT_EX(array, 0, 1)
+		Z_PARAM_ARRAY_OR_OBJECT_EX(array_zv, 0, 1)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ true);
 	zend_hash_internal_pointer_reset(array);
 
 	if (USED_RET()) {
@@ -1148,13 +1171,14 @@ PHP_FUNCTION(reset)
 /* {{{ Return the element currently pointed to by the internal array pointer */
 PHP_FUNCTION(current)
 {
-	HashTable *array;
+	zval *array_zv;
 	zval *entry;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT(array)
+		Z_PARAM_ARRAY_OR_OBJECT(array_zv)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ false);
 	if ((entry = zend_hash_get_current_data(array)) == NULL) {
 		RETURN_FALSE;
 	}
@@ -1170,12 +1194,13 @@ PHP_FUNCTION(current)
 /* {{{ Return the key of the element currently pointed to by the internal array pointer */
 PHP_FUNCTION(key)
 {
-	HashTable *array;
+	zval *array_zv;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
-		Z_PARAM_ARRAY_OR_OBJECT_HT(array)
+		Z_PARAM_ARRAY_OR_OBJECT(array_zv)
 	ZEND_PARSE_PARAMETERS_END();
 
+	HashTable *array = get_ht_for_iap(array_zv, /* separate */ false);
 	zend_hash_get_current_key_zval(array, return_value);
 }
 /* }}} */
@@ -1543,7 +1568,7 @@ static inline void php_search_array(INTERNAL_FUNCTION_PARAMETERS, int behavior) 
 					}
 				}
 			} ZEND_HASH_FOREACH_END();
- 		}
+		}
 	}
 
 	RETURN_FALSE;
@@ -2447,7 +2472,7 @@ PHP_FUNCTION(extract)
 }
 /* }}} */
 
-static void php_compact_var(HashTable *eg_active_symbol_table, zval *return_value, zval *entry) /* {{{ */
+static void php_compact_var(HashTable *eg_active_symbol_table, zval *return_value, zval *entry, uint32_t pos) /* {{{ */
 {
 	zval *value_ptr, data;
 
@@ -2475,11 +2500,14 @@ static void php_compact_var(HashTable *eg_active_symbol_table, zval *return_valu
 			Z_PROTECT_RECURSION_P(entry);
 		}
 		ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(entry), value_ptr) {
-			php_compact_var(eg_active_symbol_table, return_value, value_ptr);
+			php_compact_var(eg_active_symbol_table, return_value, value_ptr, pos);
 		} ZEND_HASH_FOREACH_END();
 	    if (Z_REFCOUNTED_P(entry)) {
 			Z_UNPROTECT_RECURSION_P(entry);
 		}
+	} else {
+		php_error_docref(NULL, E_WARNING, "Argument #%d must be string or array of strings, %s given", pos, zend_zval_type_name(entry));
+		return;
 	}
 }
 /* }}} */
@@ -2512,7 +2540,7 @@ PHP_FUNCTION(compact)
 	}
 
 	for (i = 0; i < num_args; i++) {
-		php_compact_var(symbol_table, return_value, &args[i]);
+		php_compact_var(symbol_table, return_value, &args[i], i + 1);
 	}
 }
 /* }}} */
@@ -4018,7 +4046,7 @@ PHP_FUNCTION(array_count_values)
 }
 /* }}} */
 
-static inline zval *array_column_fetch_prop(zval *data, zend_string *name_str, zend_long name_long, zval *rv) /* {{{ */
+static inline zval *array_column_fetch_prop(zval *data, zend_string *name_str, zend_long name_long, void **cache_slot, zval *rv) /* {{{ */
 {
 	zval *prop = NULL;
 
@@ -4033,9 +4061,9 @@ static inline zval *array_column_fetch_prop(zval *data, zend_string *name_str, z
 		/* The has_property check is first performed in "exists" mode (which returns true for
 		 * properties that are null but exist) and then in "has" mode to handle objects that
 		 * implement __isset (which is not called in "exists" mode). */
-		if (Z_OBJ_HANDLER_P(data, has_property)(Z_OBJ_P(data), tmp_str, ZEND_PROPERTY_EXISTS, NULL)
-				|| Z_OBJ_HANDLER_P(data, has_property)(Z_OBJ_P(data), tmp_str, ZEND_PROPERTY_ISSET, NULL)) {
-			prop = Z_OBJ_HANDLER_P(data, read_property)(Z_OBJ_P(data), tmp_str, BP_VAR_R, NULL, rv);
+		if (Z_OBJ_HANDLER_P(data, has_property)(Z_OBJ_P(data), tmp_str, ZEND_PROPERTY_EXISTS, cache_slot)
+				|| Z_OBJ_HANDLER_P(data, has_property)(Z_OBJ_P(data), tmp_str, ZEND_PROPERTY_ISSET, cache_slot)) {
+			prop = Z_OBJ_HANDLER_P(data, read_property)(Z_OBJ_P(data), tmp_str, BP_VAR_R, cache_slot, rv);
 			if (prop) {
 				ZVAL_DEREF(prop);
 				if (prop != rv) {
@@ -4081,6 +4109,9 @@ PHP_FUNCTION(array_column)
 		Z_PARAM_STR_OR_LONG_OR_NULL(index_str, index_long, index_is_null)
 	ZEND_PARSE_PARAMETERS_END();
 
+	void* cache_slot_column[3] = { NULL, NULL, NULL };
+	void* cache_slot_index[3] = { NULL, NULL, NULL };
+
 	array_init_size(return_value, zend_hash_num_elements(input));
 	/* Index param is not passed */
 	if (index_is_null) {
@@ -4091,7 +4122,7 @@ PHP_FUNCTION(array_column)
 				if (column_is_null) {
 					Z_TRY_ADDREF_P(data);
 					colval = data;
-				} else if ((colval = array_column_fetch_prop(data, column_str, column_long, &rv)) == NULL) {
+				} else if ((colval = array_column_fetch_prop(data, column_str, column_long, cache_slot_column, &rv)) == NULL) {
 					continue;
 				}
 				ZEND_HASH_FILL_ADD(colval);
@@ -4104,12 +4135,12 @@ PHP_FUNCTION(array_column)
 			if (column_is_null) {
 				Z_TRY_ADDREF_P(data);
 				colval = data;
-			} else if ((colval = array_column_fetch_prop(data, column_str, column_long, &rv)) == NULL) {
+			} else if ((colval = array_column_fetch_prop(data, column_str, column_long, cache_slot_column, &rv)) == NULL) {
 				continue;
 			}
 
 			zval rv;
-			zval *keyval = array_column_fetch_prop(data, index_str, index_long, &rv);
+			zval *keyval = array_column_fetch_prop(data, index_str, index_long, cache_slot_index, &rv);
 			if (keyval) {
 				array_set_zval_key(Z_ARRVAL_P(return_value), keyval, colval);
 				zval_ptr_dtor(colval);
@@ -5772,6 +5803,9 @@ PHP_FUNCTION(array_reduce)
 			zval_ptr_dtor(&args[1]);
 			zval_ptr_dtor(&args[0]);
 			ZVAL_COPY_VALUE(return_value, &retval);
+			if (UNEXPECTED(Z_ISREF_P(return_value))) {
+				zend_unwrap_reference(return_value);
+			}
 		} else {
 			zval_ptr_dtor(&args[1]);
 			zval_ptr_dtor(&args[0]);
@@ -6043,7 +6077,7 @@ PHP_FUNCTION(array_key_exists)
 			RETVAL_BOOL(zend_hash_exists(ht, ZSTR_EMPTY_ALLOC()));
 			break;
 		case IS_DOUBLE:
-			RETVAL_BOOL(zend_hash_index_exists(ht, zend_dval_to_lval(Z_DVAL_P(key))));
+			RETVAL_BOOL(zend_hash_index_exists(ht, zend_dval_to_lval_safe(Z_DVAL_P(key))));
 			break;
 		case IS_FALSE:
 			RETVAL_BOOL(zend_hash_index_exists(ht, 0));

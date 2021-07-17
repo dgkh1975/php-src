@@ -5,7 +5,7 @@
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
    | available through the world-wide-web at the following url:           |
-   | http://www.php.net/license/3_01.txt                                  |
+   | https://www.php.net/license/3_01.txt                                 |
    | If you did not receive a copy of the PHP license and are unable to   |
    | obtain it through the world-wide-web, please send a note to          |
    | license@php.net so we can mail you a copy immediately.               |
@@ -247,7 +247,6 @@ static inline HashTable* spl_object_storage_debug_info(zend_object *obj) /* {{{ 
 	spl_SplObjectStorageElement *element;
 	HashTable *props;
 	zval tmp, storage;
-	zend_string *md5str;
 	zend_string *zname;
 	HashTable *debug_info;
 
@@ -259,7 +258,6 @@ static inline HashTable* spl_object_storage_debug_info(zend_object *obj) /* {{{ 
 	array_init(&storage);
 
 	ZEND_HASH_FOREACH_PTR(&intern->storage, element) {
-		md5str = php_spl_object_hash(element->obj);
 		array_init(&tmp);
 		/* Incrementing the refcount of obj and inf would confuse the garbage collector.
 		 * Prefer to null the destructor */
@@ -268,8 +266,7 @@ static inline HashTable* spl_object_storage_debug_info(zend_object *obj) /* {{{ 
 		ZVAL_OBJ(&obj, element->obj);
 		add_assoc_zval_ex(&tmp, "obj", sizeof("obj") - 1, &obj);
 		add_assoc_zval_ex(&tmp, "inf", sizeof("inf") - 1, &element->inf);
-		zend_hash_update(Z_ARRVAL(storage), md5str, &tmp);
-		zend_string_release_ex(md5str, 0);
+		zend_hash_next_index_insert(Z_ARRVAL(storage), &tmp);
 	} ZEND_HASH_FOREACH_END();
 
 	zname = spl_gen_private_prop_name(spl_ce_SplObjectStorage, "storage", sizeof("storage")-1);
@@ -569,7 +566,8 @@ PHP_METHOD(SplObjectStorage, current)
 	}
 
 	if ((element = zend_hash_get_current_data_ptr_ex(&intern->storage, &intern->pos)) == NULL) {
-		return;
+		zend_throw_exception(spl_ce_RuntimeException, "Called current() on invalid iterator", 0);
+		RETURN_THROWS();
 	}
 	ZVAL_OBJ_COPY(return_value, element->obj);
 } /* }}} */
@@ -1099,7 +1097,9 @@ static void spl_multiple_iterator_get_all(spl_SplObjectStorage *intern, int get_
 
 	num_elements = zend_hash_num_elements(&intern->storage);
 	if (num_elements < 1) {
-		RETURN_FALSE;
+		zend_throw_exception_ex(spl_ce_RuntimeException, 0, "Called %s() on an invalid iterator",
+			get_type == SPL_MULTIPLE_ITERATOR_GET_ALL_CURRENT ? "current" : "key");
+		RETURN_THROWS();
 	}
 
 	array_init_size(return_value, num_elements);
@@ -1190,26 +1190,22 @@ PHP_METHOD(MultipleIterator, key)
 /* {{{ PHP_MINIT_FUNCTION(spl_observer) */
 PHP_MINIT_FUNCTION(spl_observer)
 {
-	REGISTER_SPL_INTERFACE(SplObserver);
-	REGISTER_SPL_INTERFACE(SplSubject);
+	spl_ce_SplObserver = register_class_SplObserver();
+	spl_ce_SplSubject = register_class_SplSubject();
 
-	REGISTER_SPL_STD_CLASS_EX(SplObjectStorage, spl_SplObjectStorage_new, class_SplObjectStorage_methods);
+	spl_ce_SplObjectStorage = register_class_SplObjectStorage(zend_ce_countable, zend_ce_iterator, zend_ce_serializable, zend_ce_arrayaccess);
+	spl_ce_SplObjectStorage->create_object = spl_SplObjectStorage_new;
+
 	memcpy(&spl_handler_SplObjectStorage, &std_object_handlers, sizeof(zend_object_handlers));
 
 	spl_handler_SplObjectStorage.offset          = XtOffsetOf(spl_SplObjectStorage, std);
 	spl_handler_SplObjectStorage.compare         = spl_object_storage_compare_objects;
 	spl_handler_SplObjectStorage.clone_obj       = spl_object_storage_clone;
 	spl_handler_SplObjectStorage.get_gc          = spl_object_storage_get_gc;
-	spl_handler_SplObjectStorage.dtor_obj        = zend_objects_destroy_object;
 	spl_handler_SplObjectStorage.free_obj        = spl_SplObjectStorage_free_storage;
 
-	REGISTER_SPL_IMPLEMENTS(SplObjectStorage, Countable);
-	REGISTER_SPL_IMPLEMENTS(SplObjectStorage, Iterator);
-	REGISTER_SPL_IMPLEMENTS(SplObjectStorage, Serializable);
-	REGISTER_SPL_IMPLEMENTS(SplObjectStorage, ArrayAccess);
-
-	REGISTER_SPL_STD_CLASS_EX(MultipleIterator, spl_SplObjectStorage_new, class_MultipleIterator_methods);
-	REGISTER_SPL_ITERATOR(MultipleIterator);
+	spl_ce_MultipleIterator = register_class_MultipleIterator(zend_ce_iterator);
+	spl_ce_MultipleIterator->create_object = spl_SplObjectStorage_new;
 
 	REGISTER_SPL_CLASS_CONST_LONG(MultipleIterator, "MIT_NEED_ANY",     MIT_NEED_ANY);
 	REGISTER_SPL_CLASS_CONST_LONG(MultipleIterator, "MIT_NEED_ALL",     MIT_NEED_ALL);

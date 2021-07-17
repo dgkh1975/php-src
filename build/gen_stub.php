@@ -125,6 +125,10 @@ class SimpleType {
                 return new SimpleType($node->toString(), true);
             }
 
+            if ($node->toLowerString() === 'self') {
+                throw new Exception('The exact class name must be used instead of "self"');
+            }
+
             assert($node->isFullyQualified());
             return new SimpleType($node->toString(), false);
         }
@@ -149,9 +153,11 @@ class SimpleType {
             case "object":
             case "resource":
             case "mixed":
-            case "self":
             case "static":
+            case "never":
                 return new SimpleType(strtolower($type), true);
+            case "self":
+                throw new Exception('The exact class name must be used instead of "self"');
         }
 
         if (strpos($type, "[]") !== false) {
@@ -200,6 +206,8 @@ class SimpleType {
             return "IS_MIXED";
         case "static":
             return "IS_STATIC";
+        case "never":
+            return "IS_NEVER";
         default:
             throw new Exception("Not implemented: $this->name");
         }
@@ -230,6 +238,8 @@ class SimpleType {
             return "MAY_BE_ANY";
         case "static":
             return "MAY_BE_STATIC";
+        case "never":
+            return "MAY_BE_NEVER";
         default:
             throw new Exception("Not implemented: $this->name");
         }
@@ -599,16 +609,20 @@ class ReturnInfo {
     public $type;
     /** @var Type|null */
     public $phpDocType;
+    /** @var bool */
+    public $tentativeReturnType;
 
-    public function __construct(bool $byRef, ?Type $type, ?Type $phpDocType) {
+    public function __construct(bool $byRef, ?Type $type, ?Type $phpDocType, bool $tentativeReturnType) {
         $this->byRef = $byRef;
         $this->type = $type;
         $this->phpDocType = $phpDocType;
+        $this->tentativeReturnType = $tentativeReturnType;
     }
 
     public function equals(ReturnInfo $other): bool {
         return $this->byRef === $other->byRef
-            && Type::equals($this->type, $other->type);
+            && Type::equals($this->type, $other->type)
+            && $this->tentativeReturnType === $other->tentativeReturnType;
     }
 
     public function getMethodSynopsisType(): ?Type {
@@ -818,9 +832,10 @@ class FuncInfo {
             }
 
             if ($namespace) {
+                // Render A\B as "A\\B" in C strings for namespaces
                 return sprintf(
                     "\tZEND_NS_FE(\"%s\", %s, %s)\n",
-                    $namespace, $declarationName, $this->getArgInfoName());
+                    addslashes($namespace), $declarationName, $this->getArgInfoName());
             } else {
                 return sprintf("\tZEND_FE(%s, %s)\n", $declarationName, $this->getArgInfoName());
             }
@@ -1046,16 +1061,30 @@ class PropertyInfo
         if ($this->type) {
             $arginfoType = $this->type->toArginfoType();
             if ($arginfoType->hasClassType()) {
-                $simpleType = $this->type->tryToSimpleType();
+                if (count($arginfoType->classTypes) >= 2) {
+                    foreach ($arginfoType->classTypes as $classType) {
+                        $className = $classType->name;
+                        $code .= "\tzend_string *property_{$propertyName}_class_{$className} = zend_string_init(\"$className\", sizeof(\"$className\") - 1, 1);\n";
+                    }
 
-                $className = $arginfoType->classTypes[0]->name;
-                $code .= "	zend_string *property_{$propertyName}_class_{$className} = zend_string_init(\"$className\", sizeof(\"$className\")-1, 1);\n";
-                if ($simpleType) {
-                    $typeCode = "(zend_type) ZEND_TYPE_INIT_CLASS(property_{$propertyName}_class_{$className}, " .  ((int) $this->type->isNullable()) . ", 0)";
-                } elseif (count($arginfoType->classTypes) === 1) {
-                    $typeCode = "(zend_type) ZEND_TYPE_INIT_CLASS(property_{$propertyName}_class_{$className}, 0, " . $arginfoType->toTypeMask() . ")";
+                    $classTypeCount = count($arginfoType->classTypes);
+                    $code .= "\tzend_type_list *property_{$propertyName}_type_list = malloc(ZEND_TYPE_LIST_SIZE($classTypeCount));\n";
+                    $code .= "\tproperty_{$propertyName}_type_list->num_types = $classTypeCount;\n";
+
+                    foreach ($arginfoType->classTypes as $k => $classType) {
+                        $className = $classType->name;
+                        $code .= "\tproperty_{$propertyName}_type_list->types[$k] = (zend_type) ZEND_TYPE_INIT_CLASS(property_{$propertyName}_class_{$className}, 0, 0);\n";
+                    }
+
+                    $typeMaskCode = $this->type->toArginfoType()->toTypeMask();
+
+                    $code .= "\tzend_type property_{$propertyName}_type = ZEND_TYPE_INIT_PTR(property_{$propertyName}_type_list, _ZEND_TYPE_LIST_BIT, 0, $typeMaskCode);\n";
+                    $typeCode = "property_{$propertyName}_type";
                 } else {
-                    throw new Exception("Property $this->name has an unsupported union type");
+                    $className = $arginfoType->classTypes[0]->name;
+                    $code .= "\tzend_string *property_{$propertyName}_class_{$className} = zend_string_init(\"$className\", sizeof(\"$className\")-1, 1);\n";
+
+                    $typeCode = "(zend_type) ZEND_TYPE_INIT_CLASS(property_{$propertyName}_class_{$className}, 0, " . $arginfoType->toTypeMask() . ")";
                 }
             } else {
                 $typeCode = "(zend_type) ZEND_TYPE_INIT_MASK(" . $arginfoType->toTypeMask() . ")";
@@ -1113,10 +1142,11 @@ class PropertyInfo
                 break;
 
             case "string":
-                if (empty($value)) {
+                if ($value === "") {
                     $code .= "\tZVAL_EMPTY_STRING(&$zvalName);\n";
                 } else {
-                    $code .= "\tZVAL_STRING(&$zvalName, \"$value\");\n";
+                    $code .= "\tzend_string *{$zvalName}_str = zend_string_init(\"$value\", sizeof(\"$value\") - 1, 1);\n";
+                    $code .= "\tZVAL_STR(&$zvalName, {$zvalName}_str);\n";
                 }
                 break;
 
@@ -1216,13 +1246,13 @@ class ClassInfo {
 
         $escapedName = implode("_", $this->name->parts);
 
-        $code = "zend_class_entry *register_class_$escapedName(" . implode(", ", $params) . ")\n";
+        $code = "static zend_class_entry *register_class_$escapedName(" . (empty($params) ? "void" : implode(", ", $params)) . ")\n";
 
         $code .= "{\n";
         $code .= "\tzend_class_entry ce, *class_entry;\n\n";
         if (count($this->name->parts) > 1) {
             $className = $this->name->getLast();
-            $namespace = $this->name->slice(0, -1);
+            $namespace = addslashes((string) $this->name->slice(0, -1));
 
             $code .= "\tINIT_NS_CLASS_ENTRY(ce, \"$namespace\", \"$className\", class_{$escapedName}_methods);\n";
         } else {
@@ -1259,7 +1289,7 @@ class ClassInfo {
 
         $code .= "\n\treturn class_entry;\n";
 
-        $code .= "}\n\n";
+        $code .= "}\n";
 
         return $code;
     }
@@ -1415,6 +1445,7 @@ function parseFunctionLike(
         $isDeprecated = false;
         $verify = true;
         $docReturnType = null;
+        $tentativeReturnType = false;
         $docParamTypes = [];
 
         if ($comment) {
@@ -1436,8 +1467,10 @@ function parseFunctionLike(
                     }
                 } else if ($tag->name === 'deprecated') {
                     $isDeprecated = true;
-                }  else if ($tag->name === 'no-verify') {
+                } else if ($tag->name === 'no-verify') {
                     $verify = false;
+                } else if ($tag->name === 'tentative-return-type') {
+                    $tentativeReturnType = true;
                 } else if ($tag->name === 'return') {
                     $docReturnType = $tag->getType();
                 } else if ($tag->name === 'param') {
@@ -1487,6 +1520,10 @@ function parseFunctionLike(
                 }
             }
 
+            if ($param->default instanceof Expr\ClassConstFetch && $param->default->class->toLowerString() === "self") {
+                throw new Exception('The exact class name must be used instead of "self"');
+            }
+
             $foundVariadic = $param->variadic;
 
             $args[] = new ArgInfo(
@@ -1514,7 +1551,8 @@ function parseFunctionLike(
         $return = new ReturnInfo(
             $func->returnsByRef(),
             $returnType ? Type::fromNode($returnType) : null,
-            $docReturnType ? Type::fromPhpDoc($docReturnType) : null
+            $docReturnType ? Type::fromPhpDoc($docReturnType) : null,
+            $tentativeReturnType
         );
 
         return new FuncInfo(
@@ -1781,12 +1819,14 @@ function parseStubFile(string $code): FileInfo {
                 $fileInfo->generateLegacyArginfo = true;
             } else if ($tag->name === 'generate-class-entries') {
                 $fileInfo->generateClassEntries = true;
+                $fileInfo->declarationPrefix = $tag->value ? $tag->value . " " : "";
             }
         }
     }
 
+    // Generating class entries require generating function/method entries
     if ($fileInfo->generateClassEntries && !$fileInfo->generateFunctionEntries) {
-        throw new Exception("Function entry generation must be enabled when generating class entries");
+        $fileInfo->generateFunctionEntries = true;
     }
 
     handleStatements($fileInfo, $stmts, $prettyPrinter);
@@ -1796,18 +1836,22 @@ function parseStubFile(string $code): FileInfo {
 function funcInfoToCode(FuncInfo $funcInfo): string {
     $code = '';
     $returnType = $funcInfo->return->type;
+    $isTentativeReturnType = $funcInfo->return->tentativeReturnType;
+
     if ($returnType !== null) {
         if (null !== $simpleReturnType = $returnType->tryToSimpleType()) {
             if ($simpleReturnType->isBuiltin) {
                 $code .= sprintf(
-                    "ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(%s, %d, %d, %s, %d)\n",
+                    "%s(%s, %d, %d, %s, %d)\n",
+                    $isTentativeReturnType ? "ZEND_BEGIN_ARG_WITH_TENTATIVE_RETURN_TYPE_INFO_EX" : "ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX",
                     $funcInfo->getArgInfoName(), $funcInfo->return->byRef,
                     $funcInfo->numRequiredArgs,
                     $simpleReturnType->toTypeCode(), $returnType->isNullable()
                 );
             } else {
                 $code .= sprintf(
-                    "ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX(%s, %d, %d, %s, %d)\n",
+                    "%s(%s, %d, %d, %s, %d)\n",
+                    $isTentativeReturnType ? "ZEND_BEGIN_ARG_WITH_TENTATIVE_RETURN_OBJ_INFO_EX" : "ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX",
                     $funcInfo->getArgInfoName(), $funcInfo->return->byRef,
                     $funcInfo->numRequiredArgs,
                     $simpleReturnType->toEscapedName(), $returnType->isNullable()
@@ -1817,14 +1861,16 @@ function funcInfoToCode(FuncInfo $funcInfo): string {
             $arginfoType = $returnType->toArginfoType();
             if ($arginfoType->hasClassType()) {
                 $code .= sprintf(
-                    "ZEND_BEGIN_ARG_WITH_RETURN_OBJ_TYPE_MASK_EX(%s, %d, %d, %s, %s)\n",
+                    "%s(%s, %d, %d, %s, %s)\n",
+                    $isTentativeReturnType ? "ZEND_BEGIN_ARG_WITH_TENTATIVE_RETURN_OBJ_TYPE_MASK_EX" : "ZEND_BEGIN_ARG_WITH_RETURN_OBJ_TYPE_MASK_EX",
                     $funcInfo->getArgInfoName(), $funcInfo->return->byRef,
                     $funcInfo->numRequiredArgs,
                     $arginfoType->toClassTypeString(), $arginfoType->toTypeMask()
                 );
             } else {
                 $code .= sprintf(
-                    "ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX(%s, %d, %d, %s)\n",
+                    "%s(%s, %d, %d, %s)\n",
+                    $isTentativeReturnType ? "ZEND_BEGIN_ARG_WITH_TENTATIVE_RETURN_TYPE_MASK_EX" : "ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX",
                     $funcInfo->getArgInfoName(), $funcInfo->return->byRef,
                     $funcInfo->numRequiredArgs,
                     $arginfoType->toTypeMask()
@@ -1978,10 +2024,10 @@ function generateArgInfoCode(FileInfo $fileInfo, string $stubHash): string {
 }
 
 function generateClassEntryCode(FileInfo $fileInfo): string {
-    $code = "\n";
+    $code = "";
 
     foreach ($fileInfo->classInfos as $class) {
-        $code .= $class->getRegistration();
+        $code .= "\n" . $class->getRegistration();
     }
 
     return $code;
@@ -2279,18 +2325,20 @@ if (isset($options["h"]) || isset($options["help"])) {
 }
 
 $fileInfos = [];
-$location = $argv[$optind] ?? ".";
-if (is_file($location)) {
-    // Generate single file.
-    $fileInfo = processStubFile($location, $context);
-    if ($fileInfo) {
-        $fileInfos[] = $fileInfo;
+$locations = array_slice($argv, $optind) ?: ['.'];
+foreach (array_unique($locations) as $location) {
+    if (is_file($location)) {
+        // Generate single file.
+        $fileInfo = processStubFile($location, $context);
+        if ($fileInfo) {
+            $fileInfos[] = $fileInfo;
+        }
+    } else if (is_dir($location)) {
+        array_push($fileInfos, ...processDirectory($location, $context));
+    } else {
+        echo "$location is neither a file nor a directory.\n";
+        exit(1);
     }
-} else if (is_dir($location)) {
-    $fileInfos = processDirectory($location, $context);
-} else {
-    echo "$location is neither a file nor a directory.\n";
-    exit(1);
 }
 
 if ($printParameterStats) {

@@ -5,7 +5,7 @@
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
    | available through the world-wide-web at the following url:           |
-   | http://www.php.net/license/3_01.txt                                  |
+   | https://www.php.net/license/3_01.txt                                 |
    | If you did not receive a copy of the PHP license and are unable to   |
    | obtain it through the world-wide-web, please send a note to          |
    | license@php.net so we can mail you a copy immediately.               |
@@ -1153,6 +1153,16 @@ PHP_MINIT_FUNCTION(curl)
 	REGISTER_CURL_CONSTANT(CURL_VERSION_ALTSVC);
 #endif
 
+#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
+	REGISTER_CURL_CONSTANT(CURLOPT_ISSUERCERT_BLOB);
+	REGISTER_CURL_CONSTANT(CURLOPT_PROXY_ISSUERCERT);
+	REGISTER_CURL_CONSTANT(CURLOPT_PROXY_ISSUERCERT_BLOB);
+	REGISTER_CURL_CONSTANT(CURLOPT_PROXY_SSLCERT_BLOB);
+	REGISTER_CURL_CONSTANT(CURLOPT_PROXY_SSLKEY_BLOB);
+	REGISTER_CURL_CONSTANT(CURLOPT_SSLCERT_BLOB);
+	REGISTER_CURL_CONSTANT(CURLOPT_SSLKEY_BLOB);
+#endif
+
 	REGISTER_CURL_CONSTANT(CURLOPT_SAFE_UPLOAD);
 
 #ifdef PHP_CURL_NEED_OPENSSL_TSL
@@ -1189,6 +1199,7 @@ PHP_MINIT_FUNCTION(curl)
 	curl_object_handlers.get_constructor = curl_get_constructor;
 	curl_object_handlers.clone_obj = curl_clone_obj;
 	curl_object_handlers.cast_object = curl_cast_object;
+	curl_object_handlers.compare = zend_objects_not_comparable;
 
 	curl_multi_ce = register_class_CurlMultiHandle();
 	curl_multi_register_handlers();
@@ -1654,6 +1665,15 @@ static void curl_free_cb_arg(void **cb_arg_p)
 }
 /* }}} */
 
+#if LIBCURL_VERSION_NUM < 0x073800 /* 7.56.0 */
+/* {{{ curl_free_buffers */
+static void curl_free_buffers(void **buffer)
+{
+	zend_string_release((zend_string *) *buffer);
+}
+/* }}} */
+#endif
+
 /* {{{ curl_free_slist */
 static void curl_free_slist(zval *el)
 {
@@ -1743,6 +1763,10 @@ void init_curl_handle(php_curl *ch)
 
 	zend_llist_init(&ch->to_free->post,  sizeof(struct HttpPost *), (llist_dtor_func_t)curl_free_post,   0);
 	zend_llist_init(&ch->to_free->stream, sizeof(struct mime_data_cb_arg *), (llist_dtor_func_t)curl_free_cb_arg, 0);
+
+#if LIBCURL_VERSION_NUM < 0x073800 /* 7.56.0 */
+	zend_llist_init(&ch->to_free->buffers, sizeof(zend_string *), (llist_dtor_func_t)curl_free_buffers, 0);
+#endif
 
 	ch->to_free->slist = emalloc(sizeof(HashTable));
 	zend_hash_init(ch->to_free->slist, 4, NULL, curl_free_slist, 0);
@@ -2086,6 +2110,78 @@ static inline int build_mime_structure_from_hash(php_curl *ch, zval *zpostfields
 			continue;
 		}
 
+		if (Z_TYPE_P(current) == IS_OBJECT && instanceof_function(Z_OBJCE_P(current), curl_CURLStringFile_class)) {
+			/* new-style file upload from string */
+			zval *prop, rv;
+			char *type = NULL, *filename = NULL;
+
+			prop = zend_read_property(curl_CURLStringFile_class, Z_OBJ_P(current), "postname", sizeof("postname")-1, 0, &rv);
+			if (EG(exception)) {
+				zend_string_release_ex(string_key, 0);
+				return FAILURE;
+			}
+			ZVAL_DEREF(prop);
+			ZEND_ASSERT(Z_TYPE_P(prop) == IS_STRING);
+
+			filename = Z_STRVAL_P(prop);
+
+			prop = zend_read_property(curl_CURLStringFile_class, Z_OBJ_P(current), "mime", sizeof("mime")-1, 0, &rv);
+			if (EG(exception)) {
+				zend_string_release_ex(string_key, 0);
+				return FAILURE;
+			}
+			ZVAL_DEREF(prop);
+			ZEND_ASSERT(Z_TYPE_P(prop) == IS_STRING);
+
+			type = Z_STRVAL_P(prop);
+
+			prop = zend_read_property(curl_CURLStringFile_class, Z_OBJ_P(current), "data", sizeof("data")-1, 0, &rv);
+			if (EG(exception)) {
+				zend_string_release_ex(string_key, 0);
+				return FAILURE;
+			}
+			ZVAL_DEREF(prop);
+			ZEND_ASSERT(Z_TYPE_P(prop) == IS_STRING);
+
+			postval = Z_STR_P(prop);
+
+#if LIBCURL_VERSION_NUM >= 0x073800 /* 7.56.0 */
+			zval_ptr_dtor(&ch->postfields);
+			ZVAL_COPY(&ch->postfields, zpostfields);
+
+			part = curl_mime_addpart(mime);
+			if (part == NULL) {
+				zend_string_release_ex(string_key, 0);
+				return FAILURE;
+			}
+			if ((form_error = curl_mime_name(part, ZSTR_VAL(string_key))) != CURLE_OK
+				|| (form_error = curl_mime_data(part, ZSTR_VAL(postval), ZSTR_LEN(postval))) != CURLE_OK
+				|| (form_error = curl_mime_filename(part, filename)) != CURLE_OK
+				|| (form_error = curl_mime_type(part, type)) != CURLE_OK) {
+				error = form_error;
+			}
+#else
+			postval = zend_string_copy(postval);
+			zend_llist_add_element(&ch->to_free->buffers, &postval);
+
+			form_error = curl_formadd(&first, &last,
+							CURLFORM_COPYNAME, ZSTR_VAL(string_key),
+							CURLFORM_NAMELENGTH, ZSTR_LEN(string_key),
+							CURLFORM_BUFFER, filename,
+							CURLFORM_CONTENTTYPE, type,
+							CURLFORM_BUFFERPTR, ZSTR_VAL(postval),
+							CURLFORM_BUFFERLENGTH, ZSTR_LEN(postval),
+							CURLFORM_END);
+			if (form_error != CURL_FORMADD_OK) {
+				/* Not nice to convert between enums but we only have place for one error type */
+				error = (CURLcode)form_error;
+			}
+#endif
+
+			zend_string_release_ex(string_key, 0);
+			continue;
+		}
+
 		postval = zval_get_tmp_string(current, &tmp_postval);
 
 #if LIBCURL_VERSION_NUM >= 0x073800 /* 7.56.0 */
@@ -2191,6 +2287,7 @@ static int _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue, bool i
 				error = curl_easy_setopt(ch->cp, option, 2);
 				break;
 			}
+			ZEND_FALLTHROUGH;
 		case CURLOPT_AUTOREFERER:
 		case CURLOPT_BUFFERSIZE:
 		case CURLOPT_CONNECTTIMEOUT:
@@ -2434,6 +2531,9 @@ static int _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue, bool i
 		case CURLOPT_PROXY_TLS13_CIPHERS:
 		case CURLOPT_TLS13_CIPHERS:
 #endif
+#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
+		case CURLOPT_PROXY_ISSUERCERT:
+#endif
 		{
 			zend_string *tmp_str;
 			zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
@@ -2581,7 +2681,7 @@ static int _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue, bool i
 						zend_value_error("%s(): The provided file handle must be writable", get_active_function_name());
 						return FAILURE;
 					}
-					/* break omitted intentionally */
+					ZEND_FALLTHROUGH;
 				default:
 					error = curl_easy_setopt(ch->cp, option, fp);
 					break;
@@ -2835,6 +2935,29 @@ static int _php_curl_setopt(php_curl *ch, zend_long option, zval *zvalue, bool i
 			}
 			ZVAL_COPY(&ch->handlers.fnmatch->func_name, zvalue);
 			break;
+
+		/* Curl blob options */
+#if LIBCURL_VERSION_NUM >= 0x074700 /* Available since 7.71.0 */
+		case CURLOPT_ISSUERCERT_BLOB:
+		case CURLOPT_PROXY_ISSUERCERT_BLOB:
+		case CURLOPT_PROXY_SSLCERT_BLOB:
+		case CURLOPT_PROXY_SSLKEY_BLOB:
+		case CURLOPT_SSLCERT_BLOB:
+		case CURLOPT_SSLKEY_BLOB:
+			{
+				zend_string *tmp_str;
+				zend_string *str = zval_get_tmp_string(zvalue, &tmp_str);
+
+				struct curl_blob stblob;
+				stblob.data = ZSTR_VAL(str);
+				stblob.len = ZSTR_LEN(str);
+				stblob.flags = CURL_BLOB_COPY;
+				error = curl_easy_setopt(ch->cp, option, &stblob);
+
+				zend_tmp_string_release(tmp_str);
+			}
+			break;
+#endif
 
 		default:
 			if (is_array_config) {
@@ -3330,6 +3453,11 @@ static void curl_free_obj(zend_object *object)
 	if (--(*ch->clone) == 0) {
 		zend_llist_clean(&ch->to_free->post);
 		zend_llist_clean(&ch->to_free->stream);
+
+#if LIBCURL_VERSION_NUM < 0x073800 /* 7.56.0 */
+		zend_llist_clean(&ch->to_free->buffers);
+#endif
+
 		zend_hash_destroy(ch->to_free->slist);
 		efree(ch->to_free->slist);
 		efree(ch->to_free);

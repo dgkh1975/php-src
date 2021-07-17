@@ -5,7 +5,7 @@
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
    | available through the world-wide-web at the following url:           |
-   | http://www.php.net/license/3_01.txt                                  |
+   | https://www.php.net/license/3_01.txt                                 |
    | If you did not receive a copy of the PHP license and are unable to   |
    | obtain it through the world-wide-web, please send a note to          |
    | license@php.net so we can mail you a copy immediately.               |
@@ -310,7 +310,7 @@ try_again:
 		break;
 	case IS_DOUBLE:
 		key->key = NULL;
-		key->h = (zend_long) Z_DVAL_P(offset);
+		key->h = zend_dval_to_lval_safe(Z_DVAL_P(offset));
 		break;
 	case IS_FALSE:
 		key->key = NULL;
@@ -369,12 +369,14 @@ static zval *spl_array_get_dimension_ptr(int check_inherited, spl_array_object *
 					switch (type) {
 						case BP_VAR_R:
 							zend_error(E_WARNING, "Undefined array key \"%s\"", ZSTR_VAL(key.key));
+							ZEND_FALLTHROUGH;
 						case BP_VAR_UNSET:
 						case BP_VAR_IS:
 							retval = &EG(uninitialized_zval);
 							break;
 						case BP_VAR_RW:
 							zend_error(E_WARNING,"Undefined array key \"%s\"", ZSTR_VAL(key.key));
+							ZEND_FALLTHROUGH;
 						case BP_VAR_W: {
 							ZVAL_NULL(retval);
 						}
@@ -385,12 +387,14 @@ static zval *spl_array_get_dimension_ptr(int check_inherited, spl_array_object *
 			switch (type) {
 				case BP_VAR_R:
 					zend_error(E_WARNING, "Undefined array key \"%s\"", ZSTR_VAL(key.key));
+					ZEND_FALLTHROUGH;
 				case BP_VAR_UNSET:
 				case BP_VAR_IS:
 					retval = &EG(uninitialized_zval);
 					break;
 				case BP_VAR_RW:
 					zend_error(E_WARNING,"Undefined array key \"%s\"", ZSTR_VAL(key.key));
+					ZEND_FALLTHROUGH;
 				case BP_VAR_W: {
 				    zval value;
 					ZVAL_NULL(&value);
@@ -404,15 +408,17 @@ static zval *spl_array_get_dimension_ptr(int check_inherited, spl_array_object *
 			switch (type) {
 				case BP_VAR_R:
 					zend_error(E_WARNING, "Undefined array key " ZEND_LONG_FMT, key.h);
+					ZEND_FALLTHROUGH;
 				case BP_VAR_UNSET:
 				case BP_VAR_IS:
 					retval = &EG(uninitialized_zval);
 					break;
 				case BP_VAR_RW:
 					zend_error(E_WARNING, "Undefined array key " ZEND_LONG_FMT, key.h);
+					ZEND_FALLTHROUGH;
 				case BP_VAR_W: {
 				    zval value;
-					ZVAL_UNDEF(&value);
+					ZVAL_NULL(&value);
 					retval = zend_hash_index_update(ht, key.h, &value);
 			   }
 			}
@@ -548,9 +554,7 @@ static void spl_array_unset_dimension_ex(int check_inherited, zend_object *objec
 		if (data) {
 			if (Z_TYPE_P(data) == IS_INDIRECT) {
 				data = Z_INDIRECT_P(data);
-				if (Z_TYPE_P(data) == IS_UNDEF) {
-					zend_error(E_WARNING,"Undefined array key \"%s\"", ZSTR_VAL(key.key));
-				} else {
+				if (Z_TYPE_P(data) != IS_UNDEF) {
 					zval_ptr_dtor(data);
 					ZVAL_UNDEF(data);
 					HT_FLAGS(ht) |= HASH_FLAG_HAS_EMPTY_IND;
@@ -559,17 +563,13 @@ static void spl_array_unset_dimension_ex(int check_inherited, zend_object *objec
 						spl_array_skip_protected(intern, ht);
 					}
 				}
-			} else if (zend_hash_del(ht, key.key) == FAILURE) {
-				zend_error(E_WARNING,"Undefined array key \"%s\"", ZSTR_VAL(key.key));
+			} else {
+				zend_hash_del(ht, key.key);
 			}
-		} else {
-			zend_error(E_WARNING,"Undefined array key \"%s\"", ZSTR_VAL(key.key));
 		}
 		spl_hash_key_release(&key);
 	} else {
-		if (zend_hash_index_del(ht, key.h) == FAILURE) {
-			zend_error(E_WARNING, "Undefined array key " ZEND_LONG_FMT, key.h);
-		}
+		zend_hash_index_del(ht, key.h);
 	}
 } /* }}} */
 
@@ -578,7 +578,7 @@ static void spl_array_unset_dimension(zend_object *object, zval *offset) /* {{{ 
 	spl_array_unset_dimension_ex(1, object, offset);
 } /* }}} */
 
-static int spl_array_has_dimension_ex(int check_inherited, zend_object *object, zval *offset, int check_empty) /* {{{ */
+static int spl_array_has_dimension_ex(bool check_inherited, zend_object *object, zval *offset, int check_empty) /* {{{ */
 {
 	spl_array_object *intern = spl_array_from_obj(object);
 	zval rv, *value = NULL, *tmp;
@@ -586,16 +586,17 @@ static int spl_array_has_dimension_ex(int check_inherited, zend_object *object, 
 	if (check_inherited && intern->fptr_offset_has) {
 		zend_call_method_with_1_params(object, object->ce, &intern->fptr_offset_has, "offsetExists", &rv, offset);
 
-		if (zend_is_true(&rv)) {
-			zval_ptr_dtor(&rv);
-			if (check_empty != 1) {
-				return 1;
-			} else if (intern->fptr_offset_get) {
-				value = spl_array_read_dimension_ex(1, object, offset, BP_VAR_R, &rv);
-			}
-		} else {
+		if (!zend_is_true(&rv)) {
 			zval_ptr_dtor(&rv);
 			return 0;
+		}
+		zval_ptr_dtor(&rv);
+
+		/* For isset calls we don't need to check the value, so return early */
+		if (!check_empty) {
+			return 1;
+		} else if (intern->fptr_offset_get) {
+			value = spl_array_read_dimension_ex(1, object, offset, BP_VAR_R, &rv);
 		}
 	}
 
@@ -615,12 +616,14 @@ static int spl_array_has_dimension_ex(int check_inherited, zend_object *object, 
 			tmp = zend_hash_index_find(ht, key.h);
 		}
 
-		if (tmp) {
-			if (check_empty == 2) {
-				return 1;
-			}
-		} else {
+		if (!tmp) {
 			return 0;
+		}
+
+		/* check_empty is only equal to 2 if it is called from offsetExists on this class,
+		 * where it needs to report an offset exists even if the value is null */
+		if (check_empty == 2) {
+			return 1;
 		}
 
 		if (check_empty && check_inherited && intern->fptr_offset_get) {
@@ -630,18 +633,17 @@ static int spl_array_has_dimension_ex(int check_inherited, zend_object *object, 
 		}
 	}
 
-	{
-		bool result = check_empty ? zend_is_true(value) : Z_TYPE_P(value) != IS_NULL;
-		if (value == &rv) {
-			zval_ptr_dtor(&rv);
-		}
-		return result;
+	if (value == &rv) {
+		zval_ptr_dtor(&rv);
 	}
+
+	/* empty() check the value is not falsy, isset() only check it is not null */
+	return check_empty ? zend_is_true(value) : Z_TYPE_P(value) != IS_NULL;
 } /* }}} */
 
 static int spl_array_has_dimension(zend_object *object, zval *offset, int check_empty) /* {{{ */
 {
-	return spl_array_has_dimension_ex(1, object, offset, check_empty);
+	return spl_array_has_dimension_ex(/* check_inherited */ true, object, offset, check_empty);
 } /* }}} */
 
 /* {{{ Returns whether the requested $index exists. */
@@ -651,7 +653,7 @@ PHP_METHOD(ArrayObject, offsetExists)
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "z", &index) == FAILURE) {
 		RETURN_THROWS();
 	}
-	RETURN_BOOL(spl_array_has_dimension_ex(0, Z_OBJ_P(ZEND_THIS), index, 2));
+	RETURN_BOOL(spl_array_has_dimension_ex(/* check_inherited */ false, Z_OBJ_P(ZEND_THIS), index, 2));
 } /* }}} */
 
 /* {{{ Returns the value at the specified $index. */
@@ -1133,7 +1135,7 @@ PHP_METHOD(ArrayObject, __construct)
 	spl_array_object *intern;
 	zval *array;
 	zend_long ar_flags = 0;
-	zend_class_entry *ce_get_iterator = spl_ce_Iterator;
+	zend_class_entry *ce_get_iterator = spl_ce_ArrayIterator;
 
 	if (ZEND_NUM_ARGS() == 0) {
 		return; /* nothing to do */
@@ -1153,7 +1155,7 @@ PHP_METHOD(ArrayObject, __construct)
 
 	spl_array_set_array(object, intern, array, ar_flags, ZEND_NUM_ARGS() == 1);
 }
- /* }}} */
+/* }}} */
 
 /* {{{ Constructs a new array iterator from an array or object. */
 PHP_METHOD(ArrayIterator, __construct)
@@ -1177,14 +1179,14 @@ PHP_METHOD(ArrayIterator, __construct)
 
 	spl_array_set_array(object, intern, array, ar_flags, ZEND_NUM_ARGS() == 1);
 }
- /* }}} */
+/* }}} */
 
 /* {{{ Set the class used in getIterator. */
 PHP_METHOD(ArrayObject, setIteratorClass)
 {
 	zval *object = ZEND_THIS;
 	spl_array_object *intern = Z_SPLARRAY_P(object);
-	zend_class_entry * ce_get_iterator = spl_ce_Iterator;
+	zend_class_entry *ce_get_iterator = spl_ce_ArrayIterator;
 
 	ZEND_PARSE_PARAMETERS_START(1, 1)
 		Z_PARAM_CLASS(ce_get_iterator)
@@ -1250,7 +1252,7 @@ PHP_METHOD(ArrayObject, exchangeArray)
 
 	if (intern->nApplyCount > 0) {
 		zend_throw_error(NULL, "Modification of ArrayObject during sorting is prohibited");
-		return;
+		RETURN_THROWS();
 	}
 
 	RETVAL_ARR(zend_array_dup(spl_array_get_hash_table(intern)));
@@ -1700,7 +1702,7 @@ PHP_METHOD(ArrayObject, unserialize)
 		if (*p != ';') {
 			goto outexcept;
 		}
-        ++p;
+		++p;
 	}
 
 	/* members */
@@ -1817,7 +1819,7 @@ PHP_METHOD(ArrayObject, __unserialize)
 			RETURN_THROWS();
 		}
 
-		if (!instanceof_function(ce, spl_ce_Iterator)) {
+		if (!instanceof_function(ce, zend_ce_iterator)) {
 			zend_throw_exception_ex(spl_ce_UnexpectedValueException, 0,
 				"Cannot deserialize ArrayObject with iterator class '%s'; this class does not implement the Iterator interface",
 				ZSTR_VAL(Z_STR_P(iterator_class_zv)));
@@ -1842,11 +1844,9 @@ PHP_METHOD(ArrayObject, __debugInfo)
 /* {{{ PHP_MINIT_FUNCTION(spl_array) */
 PHP_MINIT_FUNCTION(spl_array)
 {
-	REGISTER_SPL_STD_CLASS_EX(ArrayObject, spl_array_object_new, class_ArrayObject_methods);
-	REGISTER_SPL_IMPLEMENTS(ArrayObject, Aggregate);
-	REGISTER_SPL_IMPLEMENTS(ArrayObject, ArrayAccess);
-	REGISTER_SPL_IMPLEMENTS(ArrayObject, Serializable);
-	REGISTER_SPL_IMPLEMENTS(ArrayObject, Countable);
+	spl_ce_ArrayObject = register_class_ArrayObject(zend_ce_aggregate, zend_ce_arrayaccess, zend_ce_serializable, zend_ce_countable);
+	spl_ce_ArrayObject->create_object = spl_array_object_new;
+
 	memcpy(&spl_handler_ArrayObject, &std_object_handlers, sizeof(zend_object_handlers));
 
 	spl_handler_ArrayObject.offset = XtOffsetOf(spl_array_object, std);
@@ -1867,19 +1867,14 @@ PHP_MINIT_FUNCTION(spl_array)
 	spl_handler_ArrayObject.unset_property = spl_array_unset_property;
 
 	spl_handler_ArrayObject.compare = spl_array_compare_objects;
-	spl_handler_ArrayObject.dtor_obj = zend_objects_destroy_object;
 	spl_handler_ArrayObject.free_obj = spl_array_object_free_storage;
 
-	REGISTER_SPL_STD_CLASS_EX(ArrayIterator, spl_array_object_new, class_ArrayIterator_methods);
-	REGISTER_SPL_IMPLEMENTS(ArrayIterator, Iterator);
-	REGISTER_SPL_IMPLEMENTS(ArrayIterator, ArrayAccess);
-	REGISTER_SPL_IMPLEMENTS(ArrayIterator, SeekableIterator);
-	REGISTER_SPL_IMPLEMENTS(ArrayIterator, Serializable);
-	REGISTER_SPL_IMPLEMENTS(ArrayIterator, Countable);
-	memcpy(&spl_handler_ArrayIterator, &spl_handler_ArrayObject, sizeof(zend_object_handlers));
+	spl_ce_ArrayIterator = register_class_ArrayIterator(spl_ce_SeekableIterator, zend_ce_arrayaccess, zend_ce_serializable, zend_ce_countable);
+	spl_ce_ArrayIterator->create_object = spl_array_object_new;
 	spl_ce_ArrayIterator->get_iterator = spl_array_get_iterator;
 	spl_ce_ArrayIterator->ce_flags |= ZEND_ACC_REUSE_GET_ITERATOR;
 
+	memcpy(&spl_handler_ArrayIterator, &spl_handler_ArrayObject, sizeof(zend_object_handlers));
 
 	REGISTER_SPL_CLASS_CONST_LONG(ArrayObject,   "STD_PROP_LIST",    SPL_ARRAY_STD_PROP_LIST);
 	REGISTER_SPL_CLASS_CONST_LONG(ArrayObject,   "ARRAY_AS_PROPS",   SPL_ARRAY_ARRAY_AS_PROPS);
@@ -1887,8 +1882,8 @@ PHP_MINIT_FUNCTION(spl_array)
 	REGISTER_SPL_CLASS_CONST_LONG(ArrayIterator, "STD_PROP_LIST",    SPL_ARRAY_STD_PROP_LIST);
 	REGISTER_SPL_CLASS_CONST_LONG(ArrayIterator, "ARRAY_AS_PROPS",   SPL_ARRAY_ARRAY_AS_PROPS);
 
-	REGISTER_SPL_SUB_CLASS_EX(RecursiveArrayIterator, ArrayIterator, spl_array_object_new, class_RecursiveArrayIterator_methods);
-	REGISTER_SPL_IMPLEMENTS(RecursiveArrayIterator, RecursiveIterator);
+	spl_ce_RecursiveArrayIterator = register_class_RecursiveArrayIterator(spl_ce_ArrayIterator, spl_ce_RecursiveIterator);
+	spl_ce_RecursiveArrayIterator->create_object = spl_array_object_new;
 	spl_ce_RecursiveArrayIterator->get_iterator = spl_array_get_iterator;
 	spl_ce_RecursiveArrayIterator->ce_flags |= ZEND_ACC_REUSE_GET_ITERATOR;
 

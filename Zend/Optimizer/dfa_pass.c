@@ -7,7 +7,7 @@
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
    | available through the world-wide-web at the following url:           |
-   | http://www.php.net/license/3_01.txt                                  |
+   | https://www.php.net/license/3_01.txt                                 |
    | If you did not receive a copy of the PHP license and are unable to   |
    | obtain it through the world-wide-web, please send a note to          |
    | license@php.net so we can mail you a copy immediately.               |
@@ -16,7 +16,6 @@
    +----------------------------------------------------------------------+
 */
 
-#include "php.h"
 #include "Optimizer/zend_optimizer.h"
 #include "Optimizer/zend_optimizer_internal.h"
 #include "zend_API.h"
@@ -292,34 +291,45 @@ static bool safe_instanceof(zend_class_entry *ce1, zend_class_entry *ce2) {
 }
 
 static inline bool can_elide_return_type_check(
-		zend_op_array *op_array, zend_ssa *ssa, zend_ssa_op *ssa_op) {
-	zend_arg_info *info = &op_array->arg_info[-1];
+		const zend_script *script, zend_op_array *op_array, zend_ssa *ssa, zend_ssa_op *ssa_op) {
+	zend_arg_info *arg_info = &op_array->arg_info[-1];
 	zend_ssa_var_info *use_info = &ssa->var_info[ssa_op->op1_use];
-	zend_ssa_var_info *def_info = &ssa->var_info[ssa_op->op1_def];
-
-	/* TODO: It would be better to rewrite this without using def_info,
-	 * which may not be an exact representation of the type. */
-	if (use_info->type & MAY_BE_REF) {
+	uint32_t use_type = use_info->type & (MAY_BE_ANY|MAY_BE_UNDEF);
+	if (use_type & MAY_BE_REF) {
 		return 0;
 	}
 
-	/* A type is possible that is not in the allowed types */
-	if ((use_info->type & (MAY_BE_ANY|MAY_BE_UNDEF)) & ~(def_info->type & MAY_BE_ANY)) {
-		return 0;
+	if (use_type & MAY_BE_UNDEF) {
+		use_type &= ~MAY_BE_UNDEF;
+		use_type |= MAY_BE_NULL;
 	}
 
-	/* These types are not represented exactly */
-	if (ZEND_TYPE_FULL_MASK(info->type) & (MAY_BE_CALLABLE|MAY_BE_ITERABLE|MAY_BE_STATIC)) {
-		return 0;
+	uint32_t disallowed_types = use_type & ~ZEND_TYPE_PURE_MASK(arg_info->type);
+	if (!disallowed_types) {
+		/* Only contains allowed types. */
+		return true;
 	}
 
-	if (ZEND_TYPE_HAS_CLASS(info->type)) {
-		if (!use_info->ce || !def_info->ce || !safe_instanceof(use_info->ce, def_info->ce)) {
-			return 0;
-		}
+	if (disallowed_types == MAY_BE_OBJECT && use_info->ce && ZEND_TYPE_IS_COMPLEX(arg_info->type)) {
+		zend_type *single_type;
+		/* For intersection: result==false is failure, default is success.
+		 * For union: result==true is success, default is failure. */
+		bool is_intersection = ZEND_TYPE_IS_INTERSECTION(arg_info->type);
+		ZEND_TYPE_FOREACH(arg_info->type, single_type) {
+			if (ZEND_TYPE_HAS_NAME(*single_type)) {
+				zend_string *lcname = zend_string_tolower(ZEND_TYPE_NAME(*single_type));
+				zend_class_entry *ce = zend_optimizer_get_class_entry(script, lcname);
+				zend_string_release(lcname);
+				bool result = ce && safe_instanceof(use_info->ce, ce);
+				if (result == !is_intersection) {
+					return result;
+				}
+			}
+		} ZEND_TYPE_FOREACH_END();
+		return is_intersection;
 	}
 
-	return 1;
+	return false;
 }
 
 static bool opline_supports_assign_contraction(
@@ -381,6 +391,7 @@ int zend_dfa_optimize_calls(zend_op_array *op_array, zend_ssa *ssa)
 				zend_op *send_array;
 				zend_op *send_needly;
 				bool strict = 0;
+				ZEND_ASSERT(!call_info->is_prototype);
 
 				if (call_info->caller_init_opline->extended_value == 2) {
 					send_array = call_info->caller_call_opline - 1;
@@ -612,7 +623,7 @@ static void zend_ssa_replace_control_link(zend_op_array *op_array, zend_ssa *ssa
 				if (ZEND_OFFSET_TO_OPLINE_NUM(op_array, opline, opline->extended_value) == old->start) {
 					opline->extended_value = ZEND_OPLINE_NUM_TO_OFFSET(op_array, opline, dst->start);
 				}
-				/* break missing intentionally */
+				ZEND_FALLTHROUGH;
 			case ZEND_JMPZ:
 			case ZEND_JMPNZ:
 			case ZEND_JMPZ_EX:
@@ -1235,8 +1246,7 @@ void zend_dfa_optimize_op_array(zend_op_array *op_array, zend_optimizer_ctx *ctx
 				 && ssa->ops[op_1].op1_def == v
 				 && ssa->ops[op_1].op1_use >= 0
 				 && ssa->ops[op_1].op1_use_chain == -1
-				 && ssa->vars[v].use_chain >= 0
-				 && can_elide_return_type_check(op_array, ssa, &ssa->ops[op_1])) {
+				 && can_elide_return_type_check(ctx->script, op_array, ssa, &ssa->ops[op_1])) {
 
 // op_1: VERIFY_RETURN_TYPE #orig_var.? [T] -> #v.? [T] => NOP
 
@@ -1244,10 +1254,11 @@ void zend_dfa_optimize_op_array(zend_op_array *op_array, zend_optimizer_ctx *ctx
 					if (zend_ssa_unlink_use_chain(ssa, op_1, orig_var)) {
 
 						int ret = ssa->vars[v].use_chain;
-
-						ssa->ops[ret].op1_use = orig_var;
-						ssa->ops[ret].op1_use_chain = ssa->vars[orig_var].use_chain;
-						ssa->vars[orig_var].use_chain = ret;
+						if (ret >= 0) {
+							ssa->ops[ret].op1_use = orig_var;
+							ssa->ops[ret].op1_use_chain = ssa->vars[orig_var].use_chain;
+							ssa->vars[orig_var].use_chain = ret;
+						}
 
 						ssa->vars[v].definition = -1;
 						ssa->vars[v].use_chain = -1;

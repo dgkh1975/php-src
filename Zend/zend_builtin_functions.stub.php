@@ -1,6 +1,10 @@
 <?php
 
-/** @generate-function-entries */
+/** @generate-class-entries */
+
+class stdClass
+{
+}
 
 function zend_version(): string {}
 
@@ -22,8 +26,7 @@ function strncasecmp(string $string1, string $string2, int $length): int {}
 
 function error_reporting(?int $error_level = null): int {}
 
-/** @param mixed $value */
-function define(string $constant_name, $value, bool $case_insensitive = false): bool {}
+function define(string $constant_name, mixed $value, bool $case_insensitive = false): bool {}
 
 function defined(string $constant_name): bool {}
 
@@ -58,6 +61,8 @@ function class_exists(string $class, bool $autoload = true): bool {}
 function interface_exists(string $interface, bool $autoload = true): bool {}
 
 function trait_exists(string $trait, bool $autoload = true): bool {}
+
+function enum_exists(string $enum, bool $autoload = true): bool {}
 
 function function_exists(string $function): bool {}
 
