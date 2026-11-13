@@ -11,6 +11,7 @@ class TestClass {
     private $priv = "keepOut";
 }
 
+#[AllowDynamicProperties]
 class AnotherClass {
 }
 
@@ -29,11 +30,13 @@ $propInfo = new ReflectionProperty('TestClass', 'pub2');
 var_dump($propInfo->setValue($instanceWithNoProperties, "NewValue"));
 var_dump($instanceWithNoProperties->pub2);
 ?>
---EXPECT--
+--EXPECTF--
 Protected property:
 string(8) "NewValue"
 
 
 Instance without property:
+
+Deprecated: Calling ReflectionProperty::setValue() with a given object that is not an instance of the class this property was declared in is deprecated in %s on line %d
 NULL
 string(8) "NewValue"

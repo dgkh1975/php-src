@@ -2,15 +2,13 @@
    +----------------------------------------------------------------------+
    | Zend Engine, Sparse Conditional Data Flow Propagation Framework      |
    +----------------------------------------------------------------------+
-   | Copyright (c) The PHP Group                                          |
+   | Copyright © The PHP Group and Contributors.                          |
    +----------------------------------------------------------------------+
-   | This source file is subject to version 3.01 of the PHP license,      |
-   | that is bundled with this package in the file LICENSE, and is        |
-   | available through the world-wide-web at the following url:           |
-   | https://www.php.net/license/3_01.txt                                 |
-   | If you did not receive a copy of the PHP license and are unable to   |
-   | obtain it through the world-wide-web, please send a note to          |
-   | license@php.net so we can mail you a copy immediately.               |
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
    | Authors: Nikita Popov <nikic@php.net>                                |
    +----------------------------------------------------------------------+
@@ -70,9 +68,8 @@ void scdf_mark_edge_feasible(scdf_ctx *scdf, int from, int to) {
 	} else {
 		/* Block is already executable, only a new edge became feasible.
 		 * Reevaluate phi nodes to account for changed source operands. */
-		zend_ssa_block *ssa_block = &scdf->ssa->blocks[to];
-		zend_ssa_phi *phi;
-		for (phi = ssa_block->phis; phi; phi = phi->next) {
+		const zend_ssa_block *ssa_block = &scdf->ssa->blocks[to];
+		for (const zend_ssa_phi *phi = ssa_block->phis; phi; phi = phi->next) {
 			zend_bitset_excl(scdf->phi_var_worklist, phi->ssa_var);
 			scdf->handlers.visit_phi(scdf, phi);
 		}
@@ -101,7 +98,7 @@ void scdf_init(zend_optimizer_ctx *ctx, scdf_ctx *scdf, zend_op_array *op_array,
 }
 
 void scdf_solve(scdf_ctx *scdf, const char *name) {
-	zend_ssa *ssa = scdf->ssa;
+	const zend_ssa *ssa = scdf->ssa;
 	DEBUG_PRINT("Start SCDF solve (%s)\n", name);
 	while (!zend_bitset_empty(scdf->instr_worklist, scdf->instr_worklist_len)
 		|| !zend_bitset_empty(scdf->phi_var_worklist, scdf->phi_var_worklist_len)
@@ -109,7 +106,7 @@ void scdf_solve(scdf_ctx *scdf, const char *name) {
 	) {
 		int i;
 		while ((i = zend_bitset_pop_first(scdf->phi_var_worklist, scdf->phi_var_worklist_len)) >= 0) {
-			zend_ssa_phi *phi = ssa->vars[i].definition_phi;
+			const zend_ssa_phi *phi = ssa->vars[i].definition_phi;
 			ZEND_ASSERT(phi);
 			if (zend_bitset_in(scdf->executable_blocks, phi->block)) {
 				scdf->handlers.visit_phi(scdf, phi);
@@ -119,7 +116,7 @@ void scdf_solve(scdf_ctx *scdf, const char *name) {
 		while ((i = zend_bitset_pop_first(scdf->instr_worklist, scdf->instr_worklist_len)) >= 0) {
 			int block_num = ssa->cfg.map[i];
 			if (zend_bitset_in(scdf->executable_blocks, block_num)) {
-				zend_basic_block *block = &ssa->cfg.blocks[block_num];
+				const zend_basic_block *block = &ssa->cfg.blocks[block_num];
 				zend_op *opline = &scdf->op_array->opcodes[i];
 				zend_ssa_op *ssa_op = &ssa->ops[i];
 				if (opline->opcode == ZEND_OP_DATA) {
@@ -139,18 +136,15 @@ void scdf_solve(scdf_ctx *scdf, const char *name) {
 
 		while ((i = zend_bitset_pop_first(scdf->block_worklist, scdf->block_worklist_len)) >= 0) {
 			/* This block is now live. Interpret phis and instructions in it. */
-			zend_basic_block *block = &ssa->cfg.blocks[i];
-			zend_ssa_block *ssa_block = &ssa->blocks[i];
+			const zend_basic_block *block = &ssa->cfg.blocks[i];
+			const zend_ssa_block *ssa_block = &ssa->blocks[i];
 
 			DEBUG_PRINT("Pop block %d from worklist\n", i);
 			zend_bitset_incl(scdf->executable_blocks, i);
 
-			{
-				zend_ssa_phi *phi;
-				for (phi = ssa_block->phis; phi; phi = phi->next) {
-					zend_bitset_excl(scdf->phi_var_worklist, phi->ssa_var);
-					scdf->handlers.visit_phi(scdf, phi);
-				}
+			for (const zend_ssa_phi *phi = ssa_block->phis; phi; phi = phi->next) {
+				zend_bitset_excl(scdf->phi_var_worklist, phi->ssa_var);
+				scdf->handlers.visit_phi(scdf, phi);
 			}
 
 			if (block->len == 0) {
@@ -158,7 +152,7 @@ void scdf_solve(scdf_ctx *scdf, const char *name) {
 				scdf_mark_edge_feasible(scdf, i, block->successors[0]);
 			} else {
 				zend_op *opline = NULL;
-				int j, end = block->start + block->len;
+				uint32_t j, end = block->start + block->len;
 				for (j = block->start; j < end; j++) {
 					opline = &scdf->op_array->opcodes[j];
 					zend_bitset_excl(scdf->instr_worklist, j);
@@ -185,23 +179,27 @@ void scdf_solve(scdf_ctx *scdf, const char *name) {
  * not eliminate the latter. While it cannot be reached, the FREE opcode of the loop var
  * is necessary for the correctness of temporary compaction. */
 static bool is_live_loop_var_free(
-		scdf_ctx *scdf, const zend_op *opline, const zend_ssa_op *ssa_op) {
+		const scdf_ctx *scdf, const zend_op *opline, const zend_ssa_op *ssa_op) {
 	if (!zend_optimizer_is_loop_var_free(opline)) {
 		return false;
 	}
 
-	int ssa_var = ssa_op->op1_use;
-	if (ssa_var < 0) {
+	int var = ssa_op->op1_use;
+	if (var < 0) {
 		return false;
 	}
 
-	int op_num = scdf->ssa->vars[ssa_var].definition;
-	ZEND_ASSERT(op_num >= 0);
-	uint32_t def_block = scdf->ssa->cfg.map[op_num];
+	const zend_ssa_var *ssa_var = &scdf->ssa->vars[var];
+	uint32_t def_block;
+	if (ssa_var->definition >= 0) {
+		def_block = scdf->ssa->cfg.map[ssa_var->definition];
+	} else {
+		def_block = ssa_var->definition_phi->block;
+	}
 	return zend_bitset_in(scdf->executable_blocks, def_block);
 }
 
-static bool kept_alive_by_loop_var_free(scdf_ctx *scdf, const zend_basic_block *block) {
+static bool kept_alive_by_loop_var_free(const scdf_ctx *scdf, const zend_basic_block *block) {
 	const zend_op_array *op_array = scdf->op_array;
 	const zend_cfg *cfg = &scdf->ssa->cfg;
 	if (!(cfg->flags & ZEND_FUNC_FREE_LOOP_VAR)) {
@@ -216,14 +214,15 @@ static bool kept_alive_by_loop_var_free(scdf_ctx *scdf, const zend_basic_block *
 	return false;
 }
 
-static uint32_t cleanup_loop_var_free_block(scdf_ctx *scdf, zend_basic_block *block) {
+static uint32_t cleanup_loop_var_free_block(const scdf_ctx *scdf, const zend_basic_block *block) {
 	zend_ssa *ssa = scdf->ssa;
 	const zend_op_array *op_array = scdf->op_array;
 	const zend_cfg *cfg = &ssa->cfg;
+	int block_num = block - cfg->blocks;
 	uint32_t removed_ops = 0;
 
 	/* Removes phi nodes */
-	for (zend_ssa_phi *phi = ssa->blocks[block - cfg->blocks].phis; phi; phi = phi->next) {
+	for (zend_ssa_phi *phi = ssa->blocks[block_num].phis; phi; phi = phi->next) {
 		zend_ssa_remove_uses_of_var(ssa, phi->ssa_var);
 		zend_ssa_remove_phi(ssa, phi);
 	}
@@ -231,7 +230,8 @@ static uint32_t cleanup_loop_var_free_block(scdf_ctx *scdf, zend_basic_block *bl
 	for (uint32_t i = block->start; i < block->start + block->len; i++) {
 		zend_op *opline = &op_array->opcodes[i];
 		zend_ssa_op *ssa_op = &scdf->ssa->ops[i];
-		if (is_live_loop_var_free(scdf, opline, ssa_op)) {
+		if (opline->opcode == ZEND_NOP
+		 || is_live_loop_var_free(scdf, opline, ssa_op)) {
 			continue;
 		}
 
@@ -239,22 +239,22 @@ static uint32_t cleanup_loop_var_free_block(scdf_ctx *scdf, zend_basic_block *bl
 		 * in the block. */
 		zend_ssa_remove_defs_of_instr(ssa, ssa_op);
 		zend_ssa_remove_instr(ssa, opline, ssa_op);
+		removed_ops++;
 	}
 
-	/* This block has no predecessors anymore. */
-	block->predecessors_count = 0;
+	zend_ssa_remove_block_from_cfg(ssa, block_num);
+
 	return removed_ops;
 }
 
 /* Removes unreachable blocks. This will remove both the instructions (and phis) in the
  * blocks, as well as remove them from the successor / predecessor lists and mark them
  * unreachable. Blocks already marked unreachable are not removed. */
-uint32_t scdf_remove_unreachable_blocks(scdf_ctx *scdf) {
+uint32_t scdf_remove_unreachable_blocks(const scdf_ctx *scdf) {
 	zend_ssa *ssa = scdf->ssa;
-	int i;
 	uint32_t removed_ops = 0;
-	for (i = 0; i < ssa->cfg.blocks_count; i++) {
-		zend_basic_block *block = &ssa->cfg.blocks[i];
+	for (uint32_t i = 0; i < ssa->cfg.blocks_count; i++) {
+		const zend_basic_block *block = &ssa->cfg.blocks[i];
 		if (!zend_bitset_in(scdf->executable_blocks, i) && (block->flags & ZEND_BB_REACHABLE)) {
 			if (!kept_alive_by_loop_var_free(scdf, block)) {
 				removed_ops += block->len;

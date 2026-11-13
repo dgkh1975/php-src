@@ -14,6 +14,8 @@ mb_substitute_character(0x25);
 var_dump(mb_convert_encoding("ABC", "7bit", "ASCII"));
 var_dump(mb_convert_encoding("\x80", "7bit", "ASCII"));
 var_dump(mb_convert_encoding("ABC", "8bit", "7bit"));
+var_dump(mb_check_encoding(chr(255), '7bit'));
+var_dump(mb_convert_encoding("\xAC\xAC", '7bit', 'UHC'));
 echo "7bit done\n";
 
 // "8bit"
@@ -25,6 +27,8 @@ echo "8bit done\n";
 string(3) "ABC"
 string(1) "%"
 string(3) "ABC"
+bool(false)
+string(1) "%"
 7bit done
 string(1) "%"
 8bit done

@@ -3,6 +3,7 @@ User-space streams: stream_truncate()
 --FILE--
 <?php
 class test_wrapper_base {
+    public $context;
     public $mode;
     function stream_open($path, $mode, $openedpath) {
         return true;
@@ -40,8 +41,8 @@ test("stream_truncate size 0", $fd, 0);
 test("stream_truncate size 10", $fd, 10);
 try {
     test("stream_truncate negative size", $fd, -1);
-} catch (\ValueError $e) {
-    echo $e->getMessage() . \PHP_EOL;
+} catch (Throwable $e) {
+    echo $e::class, ': ', $e->getMessage(), "\n";
 }
 test("stream_truncate bad return", $fd3, 0);
 ?>
@@ -60,9 +61,9 @@ bool(true)
 truncation with new_size=10
 bool(true)
 ------ stream_truncate negative size: -------
-ftruncate(): Argument #2 ($size) must be greater than or equal to 0
+ValueError: ftruncate(): Argument #2 ($size) must be greater than or equal to 0
 ------ stream_truncate bad return: -------
 truncation with new_size=0
 
-Warning: ftruncate(): test_wrapper_bad::stream_truncate did not return a boolean! in %s on line %d
+Warning: ftruncate(): test_wrapper_bad::stream_truncate value must be of type bool, string given in %s on line %d
 bool(false)

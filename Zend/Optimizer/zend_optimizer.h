@@ -2,15 +2,13 @@
    +----------------------------------------------------------------------+
    | Zend OPcache                                                         |
    +----------------------------------------------------------------------+
-   | Copyright (c) The PHP Group                                          |
+   | Copyright © The PHP Group and Contributors.                          |
    +----------------------------------------------------------------------+
-   | This source file is subject to version 3.01 of the PHP license,      |
-   | that is bundled with this package in the file LICENSE, and is        |
-   | available through the world-wide-web at the following url:           |
-   | https://www.php.net/license/3_01.txt                                 |
-   | If you did not receive a copy of the PHP license and are unable to   |
-   | obtain it through the world-wide-web, please send a note to          |
-   | license@php.net so we can mail you a copy immediately.               |
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
    | Authors: Andi Gutmans <andi@php.net>                                 |
    |          Zeev Suraski <zeev@php.net>                                 |
@@ -43,6 +41,8 @@
 #define ZEND_OPTIMIZER_PASS_16		(1<<15)  /* Inline functions */
 
 #define ZEND_OPTIMIZER_IGNORE_OVERLOADING	(1<<16)  /* (unsafe) Ignore possibility of operator overloading */
+
+#define ZEND_OPTIMIZER_NARROW_TO_DOUBLE		(1<<17)  /* try to narrow long constant assignments to double */
 
 #define ZEND_OPTIMIZER_ALL_PASSES	0x7FFFFFFF
 
@@ -80,6 +80,7 @@
 #define ZEND_DUMP_DFA_SSA           (1<<27)
 #define ZEND_DUMP_DFA_SSA_VARS      (1<<28)
 #define ZEND_DUMP_SCCP              (1<<29)
+#define ZEND_DUMP_LINE_NUMBERS_PASSTHRU (1<<30)
 
 typedef struct _zend_script {
 	zend_string   *filename;
@@ -96,6 +97,10 @@ ZEND_API int zend_optimizer_register_pass(zend_optimizer_pass_t pass);
 ZEND_API void zend_optimizer_unregister_pass(int idx);
 zend_result zend_optimizer_startup(void);
 zend_result zend_optimizer_shutdown(void);
+
+typedef void (*zend_op_array_func_t)(zend_op_array *, void *context);
+void zend_foreach_op_array(zend_script *script, zend_op_array_func_t func, void *context);
+
 END_EXTERN_C()
 
 #endif

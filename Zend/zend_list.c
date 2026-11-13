@@ -2,15 +2,14 @@
    +----------------------------------------------------------------------+
    | Zend Engine                                                          |
    +----------------------------------------------------------------------+
-   | Copyright (c) Zend Technologies Ltd. (http://www.zend.com)           |
+   | Copyright © Zend Technologies Ltd., a subsidiary company of          |
+   |     Perforce Software, Inc., and Contributors.                       |
    +----------------------------------------------------------------------+
-   | This source file is subject to version 2.00 of the Zend license,     |
-   | that is bundled with this package in the file LICENSE, and is        |
-   | available through the world-wide-web at the following url:           |
-   | http://www.zend.com/license/2_00.txt.                                |
-   | If you did not receive a copy of the Zend license and are unable to  |
-   | obtain it through the world-wide-web, please send a note to          |
-   | license@zend.com so we can mail you a copy immediately.              |
+   | This source file is subject to the Modified BSD License that is      |
+   | bundled with this package in the file LICENSE, and is available      |
+   | through the World Wide Web at <https://www.php.net/license/>.        |
+   |                                                                      |
+   | SPDX-License-Identifier: BSD-3-Clause                                |
    +----------------------------------------------------------------------+
    | Authors: Andi Gutmans <andi@php.net>                                 |
    |          Zeev Suraski <zeev@php.net>                                 |
@@ -214,17 +213,41 @@ void zend_init_rsrc_plist(void)
 
 void zend_close_rsrc_list(HashTable *ht)
 {
-	/* Reload ht->arData on each iteration, as it may be reallocated. */
 	uint32_t i = ht->nNumUsed;
-	while (i-- > 0) {
-		Bucket *p = &ht->arData[i];
-		if (Z_TYPE(p->val) != IS_UNDEF) {
-			zend_resource *res = Z_PTR(p->val);
-			if (res->type >= 0) {
-				zend_resource_dtor(res);
+	uint32_t num = ht->nNumUsed;
+
+retry:
+	zend_try {
+		while (i-- > 0) {
+			/* Reload ht->arData on each iteration, as it may be reallocated. */
+			zval *p = ZEND_HASH_ELEMENT(ht, i);
+			if (Z_TYPE_P(p) != IS_UNDEF) {
+				zend_resource *res = Z_PTR_P(p);
+				if (res->type >= 0) {
+					zend_resource_dtor(res);
+
+					if (UNEXPECTED(ht->nNumUsed != num)) {
+						/* New resources were added, reloop from the start.
+						 * We need to keep the top->down order to avoid freeing resources
+						 * in use by the newly created resources. */
+						i = num = ht->nNumUsed;
+					}
+				}
 			}
 		}
-	}
+	} zend_catch {
+		if (UNEXPECTED(ht->nNumUsed != num)) {
+			/* See above */
+			i = num = ht->nNumUsed;
+		}
+
+		/* If we have bailed, we probably executed user code (e.g. user stream
+		 * API). Keep closing resources so they don't leak. User handlers must be
+		 * called now so they aren't called in zend_deactivate() on
+		 * zend_destroy_rsrc_list(&EG(regular_list)). At that point, the executor
+		 * has already shut down and the process would crash. */
+		goto retry;
+	} zend_end_try();
 }
 
 
@@ -275,6 +298,7 @@ ZEND_API int zend_register_list_destructors_ex(rsrc_dtor_func_t ld, rsrc_dtor_fu
 	ZVAL_PTR(&zv, lde);
 
 	if (zend_hash_next_index_insert(&list_destructors, &zv) == NULL) {
+		free(lde);
 		return FAILURE;
 	}
 	return list_destructors.nNextFreeElement-1;
@@ -284,7 +308,7 @@ ZEND_API int zend_fetch_list_dtor_id(const char *type_name)
 {
 	zend_rsrc_list_dtors_entry *lde;
 
-	ZEND_HASH_FOREACH_PTR(&list_destructors, lde) {
+	ZEND_HASH_PACKED_FOREACH_PTR(&list_destructors, lde) {
 		if (lde->type_name && (strcmp(type_name, lde->type_name) == 0)) {
 			return lde->resource_id;
 		}

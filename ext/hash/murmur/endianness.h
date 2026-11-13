@@ -2,7 +2,7 @@ static const union {
   uint8_t u8[2];
   uint16_t u16;
 } EndianMix = {{ 1, 0 }};
-FORCE_INLINE int IsBigEndian()
+FORCE_INLINE int IsBigEndian(void)
 {
   // Constant-folded by the compiler.
   return EndianMix.u16 != 1;
@@ -13,14 +13,7 @@ FORCE_INLINE int IsBigEndian()
 #  define BSWAP32(u) _byteswap_ulong(u)
 #  define BSWAP64(u) _byteswap_uint64(u)
 #else
-#  ifdef __has_builtin
-#    if __has_builtin(__builtin_bswap32)
-#      define BSWAP32(u) __builtin_bswap32(u)
-#    endif // __has_builtin(__builtin_bswap32)
-#    if __has_builtin(__builtin_bswap64)
-#      define BSWAP64(u) __builtin_bswap64(u)
-#    endif // __has_builtin(__builtin_bswap64)
-#  elif defined(__GNUC__) && ( \
+#  if defined(__GNUC__) && ( \
                     __GNUC__ > 4 || ( \
                       __GNUC__ == 4 && ( \
                         __GNUC_MINOR__ >= 3 \
@@ -29,6 +22,13 @@ FORCE_INLINE int IsBigEndian()
                   )
 #    define BSWAP32(u) __builtin_bswap32(u)
 #    define BSWAP64(u) __builtin_bswap64(u)
+#  elif defined(__has_builtin)
+#    if __has_builtin(__builtin_bswap32)
+#      define BSWAP32(u) __builtin_bswap32(u)
+#    endif // __has_builtin(__builtin_bswap32)
+#    if __has_builtin(__builtin_bswap64)
+#      define BSWAP64(u) __builtin_bswap64(u)
+#    endif // __has_builtin(__builtin_bswap64)
 #  endif // __has_builtin
 #endif // defined(_MSC_VER)
 

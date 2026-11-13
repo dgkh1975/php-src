@@ -23,10 +23,12 @@ $o->func();
 try {
     call_user_func(array($o, 'test_base::func'));
 } catch (TypeError $e) {
-    echo $e->getMessage(), "\n";
+    echo $e::class, ': ', $e->getMessage(), "\n";
 }
 
 ?>
---EXPECT--
+--EXPECTF--
 test::func()
-call_user_func(): Argument #1 ($callback) must be a valid callback, cannot call abstract method test_base::func()
+
+Deprecated: Callables of the form ["test", "test_base::func"] are deprecated in %s on line %d
+TypeError: call_user_func(): Argument #1 ($callback) must be a valid callback, cannot call abstract method test_base::func()
